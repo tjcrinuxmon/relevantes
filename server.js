@@ -7,7 +7,7 @@ const path = require('path');
 require('./database'); // init sincrónico (crea tablas)
 
 const app = express();
-const PORT = process.env.PORT || 3006;
+const PORT = process.env.PORT || 3007;
 
 app.use(helmet({ contentSecurityPolicy: false }));
 app.use(cors({
