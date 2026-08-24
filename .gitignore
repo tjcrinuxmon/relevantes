@@ -1,0 +1,11 @@
+node_modules/
+.env
+relevantes.db
+relevantes.db-wal
+relevantes.db-shm
+uploads/*
+!uploads/.gitkeep
+
+# logs
+*.log
+_run.log

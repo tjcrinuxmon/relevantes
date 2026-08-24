@@ -1,0 +1,26 @@
+const jwt = require('jsonwebtoken');
+const db = require('../database');
+
+const JWT_SECRET = process.env.JWT_SECRET;
+if (!JWT_SECRET) { console.error('FATAL: JWT_SECRET no definido'); process.exit(1); }
+
+function authMiddleware(req, res, next) {
+  const authHeader = req.headers['authorization'];
+  const token = authHeader && authHeader.split(' ')[1];
+  if (!token) return res.status(401).json({ error: 'Token requerido' });
+  try {
+    const payload = jwt.verify(token, JWT_SECRET);
+    const user = db.prepare('SELECT id, nombre, email, rol, activo, direccion, subdireccion FROM usuarios WHERE id = ?').get(payload.id);
+    if (!user) return res.status(401).json({ error: 'Usuario no encontrado' });
+    if (!user.activo) return res.status(401).json({ error: 'Usuario desactivado' });
+    req.user = {
+      id: user.id, nombre: user.nombre, email: user.email, rol: user.rol,
+      direccion: user.direccion || null, subdireccion: user.subdireccion || null,
+    };
+    next();
+  } catch (err) {
+    return res.status(401).json({ error: 'Token inválido' });
+  }
+}
+
+module.exports = { authMiddleware, JWT_SECRET };
