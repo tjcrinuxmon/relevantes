@@ -21,14 +21,21 @@ async function api(method, path, body = null, isFormData = false) {
   const opts = { method, headers: { Authorization: `Bearer ${state.token}` } };
   if (body && !isFormData) { opts.headers['Content-Type'] = 'application/json'; opts.body = JSON.stringify(body); }
   else if (body) { opts.body = body; }
-  const res = await fetch(`/api/rel${path}`, opts);
-  if (res.status === 401) { logout(); return null; }
-  if (!res.ok) {
-    const err = await res.json().catch(() => ({ error: res.statusText }));
-    throw new Error(err.error || 'Error desconocido');
+  Carga.inicio();
+  try {
+    let res;
+    try { res = await fetch(`/api/rel${path}`, opts); }
+    catch { throw new Error('Sin conexión con el servidor. Revisa tu señal e intenta de nuevo.'); }
+    if (res.status === 401) { logout(); return null; }
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({ error: res.statusText }));
+      throw new Error(err.error || 'Error desconocido');
+    }
+    const ct = res.headers.get('Content-Type') || '';
+    return ct.includes('application/json') ? await res.json() : res;
+  } finally {
+    Carga.fin();
   }
-  const ct = res.headers.get('Content-Type') || '';
-  return ct.includes('application/json') ? res.json() : res;
 }
 
 function logout() {
@@ -119,7 +126,7 @@ const TXT_ADJ  = '¿Existe documentación que permita profundizar en el tema rep
 async function ensureRelCatalogo() {
   if (relCatalogo) return relCatalogo;
   try { relCatalogo = await api('GET', '/relevantes/catalogo'); }
-  catch { relCatalogo = { direcciones: [] }; }
+  catch { return { direcciones: [] }; }
   return relCatalogo;
 }
 function relDirecciones() { return relCatalogo?.direcciones || []; }
@@ -164,16 +171,16 @@ function relWeekLabel(dates) {
 
 // ── Tablero ─────────────────────────────────────────
 async function loadRelevantesBoard() {
+  document.getElementById('rel-matrix').innerHTML = Carga.lineas(6);
   await ensureRelCatalogo();
   const monday = relMonday(relWeekOffset);
   const dates = relWeekDates(monday);
   const work = relWorkDates(monday);
   document.getElementById('rel-week-label').textContent = `Asuntos relevantes · Semana ${relWeekLabel(dates)}`;
   const wrap = document.getElementById('rel-matrix');
-  wrap.innerHTML = '<div class="rel-loading">Cargando…</div>';
   let data;
   try { data = await api('GET', `/relevantes/matrix?monday=${monday}`); }
-  catch (e) { wrap.innerHTML = `<div class="rel-loading">${e.message}</div>`; return; }
+  catch (e) { Carga.error(wrap, `No se pudo cargar el tablero: ${e.message}`, loadRelevantesBoard); return; }
   renderRelMatrix(wrap, work, data);
 }
 
@@ -222,7 +229,7 @@ function renderRelMatrix(wrap, work, data) {
 async function openRelDia(subKey, fecha) {
   document.getElementById('modal-relevante-titulo').textContent = `${relSubLabel(subKey)} — ${formatFecha(fecha)}`;
   const body = document.getElementById('modal-relevante-body');
-  body.innerHTML = '<div class="rel-loading">Cargando…</div>';
+  body.innerHTML = Carga.lineas(4);
   openModal('modal-relevante');
   try {
     const items = await api('GET', `/relevantes?subdireccion=${encodeURIComponent(subKey)}&fecha_inicio=${fecha}&fecha_fin=${fecha}`);
@@ -243,13 +250,13 @@ async function openRelDia(subKey, fecha) {
         <div class="rel-item-actions"><button class="btn btn-secondary btn-sm" onclick="openRelDetalle(${it.id})">Ver detalle</button></div>
       </div>`;
     }).join('') + `<div style="text-align:right;margin-top:12px"><button class="btn btn-secondary" onclick="closeModal('modal-relevante')">Cerrar</button></div>`;
-  } catch (e) { body.innerHTML = `<p class="empty-msg">${e.message}</p>`; }
+  } catch (e) { Carga.error(body, e.message, () => openRelDia(subKey, fecha)); }
 }
 
 // ── Modal: detalle ──────────────────────────────────
 async function openRelDetalle(id) {
   const body = document.getElementById('modal-relevante-body');
-  body.innerHTML = '<div class="rel-loading">Cargando…</div>';
+  body.innerHTML = Carga.lineas(6);
   openModal('modal-relevante');
   try {
     const it = await api('GET', `/relevantes/${id}`);
@@ -278,7 +285,7 @@ async function openRelDetalle(id) {
         ${puedeEditar ? `<button class="btn btn-danger" onclick="relEliminar(${it.id})">Eliminar</button>` : ''}
         ${puedeEditar ? `<button class="btn btn-primary" onclick="openRelevanteModal(${it.id})">Editar</button>` : ''}
       </div>`;
-  } catch (e) { body.innerHTML = `<p class="empty-msg">${e.message}</p>`; }
+  } catch (e) { Carga.error(body, e.message, () => openRelDetalle(id)); }
 }
 
 async function relEliminar(id) {
@@ -539,12 +546,16 @@ async function loadRelevantesPanel() {
   };
   Object.keys(params).forEach(k => { if (!params[k]) delete params[k]; });
   const qs = new URLSearchParams(params).toString();
+  ['relp-estatus', 'relp-prioridad'].forEach(id => { document.getElementById(id).innerHTML = Carga.lineas(2); });
   try {
     const stats = await api('GET', `/relevantes/stats${qs ? '?' + qs : ''}`);
     renderRelStatCards('relp-estatus', REL_ESTATUS, stats.por_estatus, 'estatus');
     renderRelStatCards('relp-prioridad', REL_PRIORIDAD, stats.por_prioridad, 'prioridad');
     renderRelRecientes(stats.recientes);
-  } catch (e) { toast(e.message, 'error'); }
+  } catch (e) {
+    document.getElementById('relp-prioridad').innerHTML = '';
+    Carga.error('relp-estatus', `No se pudo cargar el panel: ${e.message}`, loadRelevantesPanel);
+  }
 }
 
 function renderRelStatCards(containerId, config, counts, kind) {
