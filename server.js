@@ -18,7 +18,9 @@ app.use(cors({
 }));
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
-app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
+// Los adjuntos NO se sirven como estáticos (antes /uploads/rel/* era público, sin sesión):
+// se descargan por GET /api/relevantes/:id/adjunto, que valida sesión y subdirección.
+app.use('/uploads', (req, res) => res.status(404).end());
 app.use(express.static(path.join(__dirname, 'public')));
 
 app.use('/api/auth', require('./routes/auth'));

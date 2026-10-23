@@ -18,14 +18,50 @@ const PRIORIDADES = ['baja', 'media', 'alta', 'muy_alta'];
 const AVANCES     = [25, 50, 75, 90, 100];
 
 // ── Adjuntos (hasta 20 MB) ─────────────────────────────
+// Solo documentos de soporte, validados por extensión y por sus primeros bytes. Antes se
+// aceptaba cualquier archivo (un .html o .svg subido se servía como página en el dominio).
+const OLE = [0xD0, 0xCF, 0x11, 0xE0], ZIP = [0x50, 0x4B, 0x03, 0x04];
+const FIRMAS = {
+  '.pdf': [[0x25, 0x50, 0x44, 0x46, 0x2D]],
+  '.doc': [OLE], '.xls': [OLE], '.ppt': [OLE],
+  '.docx': [ZIP], '.xlsx': [ZIP], '.pptx': [ZIP], '.zip': [ZIP, [0x50, 0x4B, 0x05, 0x06]],
+  '.jpg': [[0xFF, 0xD8, 0xFF]], '.jpeg': [[0xFF, 0xD8, 0xFF]], '.png': [[0x89, 0x50, 0x4E, 0x47]],
+};
+const extDe = (nombre) => path.extname(nombre || '').toLowerCase();
 const storage = multer.diskStorage({
   destination: (req, file, cb) => cb(null, path.join(__dirname, '../uploads')),
-  filename: (req, file, cb) => {
-    const ext = (path.extname(file.originalname) || '').slice(0, 10);
-    cb(null, `relev_${Date.now()}_${Math.round(Math.random() * 1e6)}${ext}`);
+  filename: (req, file, cb) => cb(null, `relev_${Date.now()}_${require('crypto').randomUUID()}${extDe(file.originalname)}`),
+});
+const upload = multer({
+  storage,
+  limits: { fileSize: 20 * 1024 * 1024 },
+  fileFilter: (req, file, cb) => {
+    // Nombre original sin rutas, comillas, barras ni caracteres de control (se muestra en pantalla).
+    file.originalname = file.originalname.replace(/[\\/"'`<>\u0000-\u001f]/g, '_').slice(0, 200);
+    if (FIRMAS[extDe(file.originalname)]) cb(null, true);
+    else { const e = new Error('Tipo de archivo no permitido. Usa PDF, Word, Excel, PowerPoint, imagen (JPG/PNG) o ZIP.'); e.status = 400; cb(e); }
   },
 });
-const upload = multer({ storage, limits: { fileSize: 20 * 1024 * 1024 } });
+// Contenido real del archivo según su extensión.
+function contenidoValido(file) {
+  const firmas = FIRMAS[extDe(file.filename)];
+  if (!firmas) return false;
+  const buf = Buffer.alloc(8);
+  const fd = fs.openSync(file.path, 'r');
+  try { fs.readSync(fd, buf, 0, 8, 0); } finally { fs.closeSync(fd); }
+  return firmas.some(f => buf.subarray(0, f.length).equals(Buffer.from(f)));
+}
+// multer con error en JSON 400 (antes caía al manejador genérico como 500).
+const subirAdjunto = (req, res, next) => upload.single('adjunto')(req, res, (err) => {
+  if (!err) return next();
+  res.status(400).json({ error: err.code === 'LIMIT_FILE_SIZE' ? 'El archivo excede 20 MB' : err.message });
+});
+// El nombre en disco no sale de la API: el front solo necesita saber si hay adjunto.
+const publico = (row) => {
+  if (!row) return row;
+  const { adjunto_path, ...resto } = row;
+  return { ...resto, tiene_adjunto: !!adjunto_path };
+};
 
 const isAdmin = (req) => req.user?.rol === 'admin';
 // Ámbito de visibilidad: admin ve todo; capturista sólo su subdirección.
@@ -137,8 +173,9 @@ router.post('/sin-asuntos', (req, res) => {
 });
 
 // POST /api/relevantes — crea un asunto (adjunto opcional)
-router.post('/', upload.single('adjunto'), (req, res) => {
+router.post('/', subirAdjunto, (req, res) => {
   const cleanup = () => { if (req.file) fs.unlink(req.file.path, () => {}); };
+  if (req.file && !contenidoValido(req.file)) { cleanup(); return res.status(400).json({ error: 'El contenido del archivo no corresponde a su tipo' }); }
   try {
     const asig = resolverAsignacion(req);
     const { fecha, tema } = req.body;
@@ -159,7 +196,7 @@ router.post('/', upload.single('adjunto'), (req, res) => {
       req.user.id, req.user.nombre,
     );
     upsertReporteDiario({ direccion: asig.direccion, subdireccion: asig.subdireccion, fecha, tipo: 'con_asuntos', userId: req.user.id, userNombre: req.user.nombre });
-    res.status(201).json(db.prepare(`SELECT * FROM relevantes WHERE id = ?`).get(r.lastInsertRowid));
+    res.status(201).json(publico(db.prepare(`SELECT * FROM relevantes WHERE id = ?`).get(r.lastInsertRowid)));
   } catch (e) {
     cleanup();
     res.status(e.status || 500).json({ error: e.message });
@@ -187,7 +224,7 @@ router.get('/', (req, res) => {
     const like = `%${q.trim()}%`; args.push(like, like, like, like);
   }
   const clause = where.length ? `WHERE ${where.join(' AND ')}` : '';
-  res.json(db.prepare(`SELECT * FROM relevantes ${clause} ORDER BY fecha DESC, id DESC`).all(...args));
+  res.json(db.prepare(`SELECT * FROM relevantes ${clause} ORDER BY fecha DESC, id DESC`).all(...args).map(publico));
 });
 
 // GET /api/relevantes/:id
@@ -197,7 +234,7 @@ router.get('/:id', (req, res) => {
   if (!isAdmin(req) && row.subdireccion !== req.user.subdireccion) {
     return res.status(403).json({ error: 'No tienes acceso a este asunto' });
   }
-  res.json(row);
+  res.json(publico(row));
 });
 
 // GET /api/relevantes/:id/adjunto
@@ -213,8 +250,9 @@ router.get('/:id/adjunto', (req, res) => {
 });
 
 // PUT /api/relevantes/:id — edita (dueño o admin)
-router.put('/:id', upload.single('adjunto'), (req, res) => {
+router.put('/:id', subirAdjunto, (req, res) => {
   const cleanup = () => { if (req.file) fs.unlink(req.file.path, () => {}); };
+  if (req.file && !contenidoValido(req.file)) { cleanup(); return res.status(400).json({ error: 'El contenido del archivo no corresponde a su tipo' }); }
   const row = db.prepare(`SELECT * FROM relevantes WHERE id = ?`).get(req.params.id);
   if (!row) { cleanup(); return res.status(404).json({ error: 'Asunto no encontrado' }); }
   if (!isAdmin(req) && row.creado_por !== req.user.id) {
@@ -241,7 +279,7 @@ router.put('/:id', upload.single('adjunto'), (req, res) => {
       adjunto_path = ?, adjunto_nombre = ?, adjunto_size = ?, actualizado_en = datetime('now','localtime')
     WHERE id = ?`).run(tema, estatus, prioridad, descripcion, avance, observaciones, adjPath, adjNombre, adjSize, req.params.id);
 
-  res.json(db.prepare(`SELECT * FROM relevantes WHERE id = ?`).get(req.params.id));
+  res.json(publico(db.prepare(`SELECT * FROM relevantes WHERE id = ?`).get(req.params.id)));
 });
 
 // DELETE /api/relevantes/:id — elimina (dueño o admin)

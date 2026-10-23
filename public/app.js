@@ -61,7 +61,7 @@ function formatFecha(f) {
 }
 
 function relEscape(s) {
-  return (s || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+  return String(s ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;');
 }
 
 function setupCharCounter(inputId, max) {
@@ -275,8 +275,8 @@ async function openRelDetalle(id) {
         <div class="detail-item full"><span class="detail-label">Descripción del tema</span><div class="justif-box">${relEscape(it.descripcion) || '—'}</div></div>
         <div class="detail-item full"><span class="detail-label">Observaciones</span><div class="justif-box">${relEscape(it.observaciones) || '—'}</div></div>
         <div class="detail-item full"><span class="detail-label">Documentación adjunta</span>
-          ${it.adjunto_path
-            ? `<button class="btn btn-secondary btn-sm" onclick="fetchDownload('/api/rel/relevantes/${it.id}/adjunto','${relEscape(it.adjunto_nombre).replace(/'/g, "\\'")}')">⬇ ${relEscape(it.adjunto_nombre)}</button>`
+          ${it.tiene_adjunto
+            ? `<button class="btn btn-secondary btn-sm" id="rel-btn-adjunto">⬇ ${relEscape(it.adjunto_nombre)}</button>`
             : '<span class="detail-value">— Sin adjunto —</span>'}
         </div>
       </div>
@@ -285,6 +285,9 @@ async function openRelDetalle(id) {
         ${puedeEditar ? `<button class="btn btn-danger" onclick="relEliminar(${it.id})">Eliminar</button>` : ''}
         ${puedeEditar ? `<button class="btn btn-primary" onclick="openRelevanteModal(${it.id})">Editar</button>` : ''}
       </div>`;
+    // El nombre del archivo va por closure, nunca dentro de un atributo onclick.
+    document.getElementById('rel-btn-adjunto')?.addEventListener('click', () =>
+      fetchDownload(`/api/rel/relevantes/${it.id}/adjunto`, it.adjunto_nombre || 'adjunto'));
   } catch (e) { Carga.error(body, e.message, () => openRelDetalle(id)); }
 }
 
@@ -390,9 +393,9 @@ async function openRelevanteModal(editId = null) {
       <div class="form-group col-full">
         <label for="rel-f-adjunto">Adjuntar documentación</label>
         <p class="rel-help">${TXT_ADJ}</p>
-        ${record && record.adjunto_path ? `<p class="rel-note">Actual: ${relEscape(record.adjunto_nombre)} (subir otro lo reemplaza)</p>` : ''}
-        <input type="file" id="rel-f-adjunto" class="file-input" />
-        <p class="rel-help">Tamaño máximo: 20 MB.</p>
+        ${record && record.tiene_adjunto ? `<p class="rel-note">Actual: ${relEscape(record.adjunto_nombre)} (subir otro lo reemplaza)</p>` : ''}
+        <input type="file" id="rel-f-adjunto" class="file-input" accept=".pdf,.doc,.docx,.xls,.xlsx,.ppt,.pptx,.jpg,.jpeg,.png,.zip" />
+        <p class="rel-help">PDF, Word, Excel, PowerPoint, imagen (JPG/PNG) o ZIP. Tamaño máximo: 20 MB.</p>
       </div>
     </div>`;
 
